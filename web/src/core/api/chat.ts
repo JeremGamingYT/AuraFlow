@@ -44,15 +44,104 @@ export async function* chatStream(
   ) 
     return yield* chatReplayStream(userMessage, params, options);
   
+  // Detect if the configured base URL points to an OpenAI-compatible endpoint (e.g. LM Studio)
+  const base = env.NEXT_PUBLIC_API_URL ?? "";
+  const isOpenAICompat = base.includes(":1234") || base.includes("localhost:") || base.includes("127.0.0.1:");
+
   try{
-    const stream = fetchStream(resolveServiceURL("chat/stream"), {
-      body: JSON.stringify({
-        messages: [{ role: "user", content: userMessage }],
-        ...params,
-      }),
-      signal: options.abortSignal,
+    const serviceURL = isOpenAICompat
+      ? // LM Studio / OpenAI compatible endpoint
+        new URL("/v1/chat/completions", env.NEXT_PUBLIC_API_URL!.replace(/\/$/, "")).toString()
+      : // Deer-Flow backend endpoint
+        resolveServiceURL("chat/stream");
+
+    const body = isOpenAICompat
+      ? {
+          // LM Studio requires either no model field or an empty/generic one
+          messages: [{ role: "user", content: userMessage }],
+          stream: true,
+          temperature: 0.7,
+          max_tokens: 4096,
+          // LM Studio compatible parameters
+          top_p: 0.9,
+          presence_penalty: 0,
+          frequency_penalty: 0,
+        }
+      : {
+          messages: [{ role: "user", content: userMessage }],
+          ...params,
+        };
+
+    // Skip the test request to avoid CORS OPTIONS issues with LM Studio
+    if (isOpenAICompat) {
+      console.log("🔍 LM Studio endpoint detected, skipping test request to avoid CORS issues");
+    }
+
+    console.log("🔍 LM Studio Debug:", {
+      serviceURL,
+      isOpenAICompat,
+      body: JSON.stringify(body, null, 2)
     });
-    
+
+    // Try streaming first, fallback to non-streaming if it fails
+    let stream;
+    try {
+      const headers: Record<string, string> = {
+        "Content-Type": "application/json",
+      };
+      
+      // Add Authorization header only for OpenAI-compatible endpoints
+      if (isOpenAICompat) {
+        headers["Authorization"] = "Bearer lm-studio-dummy-key";
+      }
+      
+      stream = fetchStream(serviceURL, {
+        method: "POST",
+        headers,
+        body: JSON.stringify(body),
+        signal: options.abortSignal,
+      });
+    } catch (streamError) {
+      console.warn("🔄 Streaming failed, trying non-streaming mode:", streamError);
+      // Fallback: try without streaming
+      const nonStreamingBody = { ...body, stream: false };
+      const fallbackHeaders: Record<string, string> = {
+        "Content-Type": "application/json",
+      };
+      
+      // Add Authorization header only for OpenAI-compatible endpoints
+      if (isOpenAICompat) {
+        fallbackHeaders["Authorization"] = "Bearer lm-studio-dummy-key";
+      }
+      
+      const response = await fetch(serviceURL, {
+        method: "POST",
+        headers: fallbackHeaders,
+        body: JSON.stringify(nonStreamingBody),
+        signal: options.abortSignal,
+      });
+
+      if (!response.ok) {
+        throw new Error(`LM Studio API error: ${response.status} ${response.statusText}`);
+      }
+
+      const result = await response.json();
+      console.log("🔍 Non-streaming response:", result);
+
+      // Convert non-streaming response to streaming-like format
+      if (result.choices && result.choices[0]) {
+        yield {
+          type: "message_chunk",
+          data: {
+            content: result.choices[0].message.content,
+            finish_reason: result.choices[0].finish_reason,
+            role: "assistant"
+          },
+        } as ChatEvent;
+      }
+      return;
+    }
+
     for await (const event of stream) {
       yield {
         type: event.event,
@@ -60,7 +149,29 @@ export async function* chatStream(
       } as ChatEvent;
     }
   }catch(e){
-    console.error(e);
+    console.error("Chat API Error:", e);
+
+    // Handle LM Studio connection errors with helpful messages
+    if (isOpenAICompat && e instanceof Error) {
+      if (e.message.includes("fetch") || e.message.includes("NetworkError")) {
+        console.error("❌ Unable to connect to LM Studio. Please ensure:");
+        console.error("   - LM Studio is running");
+        console.error("   - A model is loaded in LM Studio");
+        console.error("   - Local server is started (green 'Start Server' button)");
+        console.error("   - NEXT_PUBLIC_API_URL is set to your LM Studio URL (e.g., http://localhost:1234)");
+      } else if (e.message.includes("404")) {
+        console.error("❌ LM Studio endpoint not found. Please check:");
+        console.error("   - The model supports chat completions");
+        console.error("   - LM Studio version supports the OpenAI API");
+      } else if (e.message.includes("500")) {
+        console.error("❌ LM Studio server error. Please check:");
+        console.error("   - The model is properly loaded");
+        console.error("   - LM Studio has sufficient resources");
+      }
+    }
+
+    // Re-throw the error to be handled by the caller
+    throw e;
   }
 }
 

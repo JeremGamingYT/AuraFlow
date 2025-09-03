@@ -12,6 +12,7 @@ export async function* fetchStream(
     headers: {
       "Content-Type": "application/json",
       "Cache-Control": "no-cache",
+      "Accept": "text/event-stream",
     },
     ...init,
   });

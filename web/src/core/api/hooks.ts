@@ -52,7 +52,9 @@ export function useConfig(): {
   const [config, setConfig] = useState<DeerFlowConfig | null>(null);
 
   useEffect(() => {
-    if (env.NEXT_PUBLIC_STATIC_WEBSITE_ONLY) {
+    const base = env.NEXT_PUBLIC_API_URL ?? "";
+    const isOpenAICompat = base.includes(":1234") || base.includes("localhost:") || base.includes("127.0.0.1:");
+    if (env.NEXT_PUBLIC_STATIC_WEBSITE_ONLY || isOpenAICompat) {
       setLoading(false);
       return;
     }
