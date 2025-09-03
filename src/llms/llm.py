@@ -48,6 +48,46 @@ def _get_env_llm_conf(llm_type: str) -> Dict[str, Any]:
     return conf
 
 
+# ---------------------------------------------------------------------------
+# LM Studio support helpers
+# ---------------------------------------------------------------------------
+
+
+def _detect_lmstudio_base_url() -> str | None:
+    """Detect a running LM Studio instance.
+
+    LM Studio exposes an OpenAI-compatible HTTP API typically at
+    http://localhost:1234 or (for remote access) at http://<LAN-IP>:1234.
+
+    We attempt to contact a list of common endpoints and return the first one
+    that responds successfully to the `/v1/models` route.
+    Returns the base URL including the trailing `/v1` path (e.g.
+    "http://localhost:1234/v1") or ``None`` if not detected.
+    """
+
+    candidate_hosts = [
+        "http://localhost:1234",
+        "http://127.0.0.1:1234",
+        "http://192.168.2.65:1234",
+    ]
+
+    # Optionally allow users to specify LAN host through env var
+    lan_host = os.getenv("LMSTUDIO_LAN_HOST")  # e.g. 192.168.2.65
+    if lan_host:
+        candidate_hosts.insert(0, f"http://{lan_host}:1234")
+
+    for host in candidate_hosts:
+        try:
+            # A very small timeout to keep startup fast
+            res = httpx.get(f"{host}/v1/models", timeout=1.0)
+            if res.status_code == 200:
+                return f"{host}/v1"
+        except Exception:
+            # Any connection error -> try next host
+            continue
+    return None
+
+
 def _create_llm_use_conf(llm_type: LLMType, conf: Dict[str, Any]) -> BaseChatModel:
     """Create LLM instance using configuration."""
     llm_type_config_keys = _get_llm_type_config_keys()
@@ -67,7 +107,18 @@ def _create_llm_use_conf(llm_type: LLMType, conf: Dict[str, Any]) -> BaseChatMod
     merged_conf = {**llm_conf, **env_conf}
 
     if not merged_conf:
-        raise ValueError(f"No configuration found for LLM type: {llm_type}")
+        # Attempt implicit LM Studio detection if no explicit configuration is found
+        lmstudio_base = _detect_lmstudio_base_url()
+        if lmstudio_base:
+            merged_conf = {
+                "api_base": lmstudio_base,
+                "api_key": "lm-studio",  # placeholder
+                "streaming": True,
+            }
+        else:
+            raise ValueError(
+                f"No configuration found for LLM type: {llm_type} and LM Studio not detected"
+            )
 
     # Add max_retries to handle rate limit errors
     if "max_retries" not in merged_conf:
@@ -98,6 +149,19 @@ def _create_llm_use_conf(llm_type: LLMType, conf: Dict[str, Any]) -> BaseChatMod
         merged_conf["api_base"] = merged_conf.pop("base_url", None)
         return ChatDeepSeek(**merged_conf)
     else:
+        # -------------------------------------------------------------------
+        # Fallback: attempt to use a locally running LM Studio server
+        # -------------------------------------------------------------------
+
+        lmstudio_base = merged_conf.get("base_url") or _detect_lmstudio_base_url()
+
+        if lmstudio_base:
+            # LM Studio uses OpenAI-compatible API, so ChatOpenAI works.
+            merged_conf["api_base"] = lmstudio_base
+            # LM Studio ignores the API key but langchain-openai requires one.
+            merged_conf.setdefault("api_key", "lm-studio")
+            # Enable streaming by default if not specified
+            merged_conf.setdefault("streaming", True)
         return ChatOpenAI(**merged_conf)
 
 
