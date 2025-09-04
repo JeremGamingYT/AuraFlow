@@ -14,6 +14,8 @@
     "lint:fix": "next lint --fix",
     "preview": "next build && next start",
     "start": "next start",
+    "test:lmstudio": "node scripts/test-lm-studio.js",
+    "debug:lmstudio": "node scripts/debug-lm-studio-chat.js",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

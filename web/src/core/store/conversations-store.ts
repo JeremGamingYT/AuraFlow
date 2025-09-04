@@ -19,17 +19,17 @@ interface ConversationsState {
 
 const STORAGE_KEY = "deerflow.conversations";
 
-function load(): Omit<ConversationsState, keyof ReturnType<typeof create>> {
+function load(): Pick<ConversationsState, "conversations" | "currentId"> {
   if (typeof window === "undefined") {
-    return { conversations: [], currentId: null } as any;
+    return { conversations: [], currentId: null };
   }
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return { conversations: [], currentId: null } as any;
+    if (!raw) return { conversations: [], currentId: null };
     const data = JSON.parse(raw) as { conversations: ConversationMeta[]; currentId: string | null };
     return data;
   } catch {
-    return { conversations: [], currentId: null } as any;
+    return { conversations: [], currentId: null };
   }
 }
 
@@ -61,8 +61,10 @@ export const useConversationsStore = create<ConversationsState>((set, get) => ({
   },
   deleteConversation(id) {
     const conversations = get().conversations.filter((c) => c.id !== id);
-    let currentId = get().currentId;
-    if (currentId === id) currentId = conversations.length ? conversations[0].id : null;
+    let { currentId } = get();
+    if (currentId === id) {
+      currentId = conversations.length > 0 && conversations[0] ? conversations[0].id : null;
+    }
     set({ conversations, currentId });
     persist({ conversations, currentId });
   },
